@@ -401,7 +401,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 	for _, client := range openClients {
 		client.mu.Lock()
 		ci := &conns[i]
-		ci.fill(client, client.nc, c.Now)
+		ci.fill(client, client.nc, c.Now, auth)
 		// Fill in subscription data if requested.
 		if len(client.subs) > 0 {
 			if subsDet {
@@ -409,18 +409,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			} else if subs {
 				ci.Subs = newSubsList(client)
 			}
-		}
-		// Fill in user if auth requested.
-		if auth {
-			ci.AuthorizedUser = client.getRawAuthUser()
-			// Add in account iff not the global account.
-			if client.acc != nil && (client.acc.Name != globalAccountName) {
-				ci.Account = client.acc.Name
-			}
-			ci.JWT = client.opts.JWT
-			ci.IssuerKey = issuerForClient(client)
-			ci.Tags = client.tags
-			ci.NameTag = client.nameTag
 		}
 		client.mu.Unlock()
 		pconns[i] = ci
@@ -531,7 +519,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 // Fills in the ConnInfo from the client.
 // client should be locked.
-func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
+func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) {
 	ci.Cid = client.cid
 	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
@@ -566,6 +554,19 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time) {
 	if client.port != 0 {
 		ci.Port = int(client.port)
 		ci.IP = client.host
+	}
+
+	// Fill in user if auth requested.
+	if auth {
+		ci.AuthorizedUser = client.getRawAuthUser()
+		// Add in account iff not the global account.
+		if client.acc != nil && (client.acc.Name != globalAccountName) {
+			ci.Account = client.acc.Name
+		}
+		ci.JWT = client.opts.JWT
+		ci.IssuerKey = issuerForClient(client)
+		ci.Tags = client.tags
+		ci.NameTag = client.nameTag
 	}
 }
 
@@ -1727,7 +1728,7 @@ func createOutboundRemoteGatewayz(c *client, opts *GatewayzOptions, now time.Tim
 			rgw.IsConfigured = !c.gw.cfg.isImplicit()
 		}
 		rgw.Connection = &ConnInfo{}
-		rgw.Connection.fill(c, c.nc, now)
+		rgw.Connection.fill(c, c.nc, now, false)
 		name = c.gw.name
 	}
 	c.mu.Unlock()
@@ -1811,7 +1812,7 @@ func (s *Server) createInboundsRemoteGatewayz(opts *GatewayzOptions, now time.Ti
 				rgw.Accounts = createInboundAccountsGatewayz(opts, c.gw)
 			}
 			rgw.Connection = &ConnInfo{}
-			rgw.Connection.fill(c, c.nc, now)
+			rgw.Connection.fill(c, c.nc, now, false)
 			igws = append(igws, rgw)
 			m[c.gw.name] = igws
 		}
@@ -2198,7 +2199,7 @@ func (s *Server) Accountz(optz *AccountzOptions) (*Accountz, error) {
 			return true
 		})
 		return a, nil
-	} else if aInfo, err := s.accountInfo(optz.Account); err != nil {
+	} else if aInfo, err := s.accountInfoByName(optz.Account); err != nil {
 		return nil, err
 	} else {
 		a.Account = aInfo
@@ -2231,12 +2232,19 @@ func newExtImport(v *serviceImport) ExtImport {
 	return imp
 }
 
-func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
+func (s *Server) accountInfoByName(accName string) (*AccountInfo, error) {
 	var a *Account
 	if v, ok := s.accounts.Load(accName); !ok {
 		return nil, fmt.Errorf("Account %s does not exist", accName)
 	} else {
 		a = v.(*Account)
+	}
+	return s.accountInfo(a)
+}
+
+func (s *Server) accountInfo(a *Account) (*AccountInfo, error) {
+	if a == nil {
+		return nil, fmt.Errorf("Account required for AccountInfo")
 	}
 	isSys := a == s.SystemAccount()
 	a.mu.RLock()
@@ -2341,7 +2349,7 @@ func (s *Server) accountInfo(accName string) (*AccountInfo, error) {
 		return rev
 	}
 	return &AccountInfo{
-		accName,
+		a.Name,
 		a.updated,
 		isSys,
 		a.expired,
